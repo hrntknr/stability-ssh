@@ -1,7 +1,13 @@
+use crate::{pkt_buf, queue};
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::Mutex,
+};
 use x509_parser::der_parser::asn1_rs::FromDer;
+
+const CHUNK_SIZE: usize = u16::MAX as usize;
 
 pub fn gen_cert() -> Result<(Vec<u8>, Vec<u8>)> {
     let host: String = match hostname::get()?.into_string() {
@@ -84,104 +90,146 @@ async fn signal(sig: tokio::signal::unix::SignalKind) {
 
 pub async fn pipe_quic_to_tcp(
     mut recv: quinn::RecvStream,
+    mut ack: quinn::SendStream,
     mut send: tokio::io::WriteHalf<tokio::net::TcpStream>,
-) {
-    let mut buf = [0; 2048];
+) -> Result<()> {
+    let mut buf = [0; CHUNK_SIZE];
+    let mut databuf = pkt_buf::DataBuf::new();
     loop {
         match recv.read(&mut buf).await {
             Ok(None) => break,
             Ok(Some(0)) => break,
             Ok(Some(n)) => {
                 log::debug!("quic recv {} bytes", n);
-                if let Err(e) = send.write_all(&buf[..n]).await {
-                    log::error!("pipe_quic_to_tcp: {:?}", e);
-                    break;
+
+                databuf.push(buf[..n].to_vec());
+                loop {
+                    match databuf.next() {
+                        Some((id, d)) => {
+                            send.write_all(&d).await?;
+                            ack.write_all(&pkt_buf::to_ack_pkt(id)).await?;
+                        }
+                        None => break,
+                    }
                 }
             }
             Err(quinn::ReadError::ConnectionLost(_)) => {
                 break;
             }
-            Err(e) => {
-                log::error!("pipe_quic_to_tcp: {:?}", e);
-                break;
-            }
+            Err(e) => return Err(e.into()),
         }
     }
+    Ok(())
 }
 
 pub async fn pipe_tcp_to_quic(
     mut recv: tokio::io::ReadHalf<tokio::net::TcpStream>,
     mut send: quinn::SendStream,
-) {
-    let mut buf = [0; 2048];
+    q: Arc<Mutex<queue::Queue>>,
+) -> Result<()> {
+    let mut buf = [0; CHUNK_SIZE];
     loop {
         match recv.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
                 log::debug!("tcp recv {} bytes", n);
-                if let Err(e) = send.write_all(&buf[..n]).await {
-                    log::error!("pipe_tcp_to_quic: {:?}", e);
-                    break;
-                }
+                let id = q.lock().await.push(buf[..n].to_vec())?;
+                let pkt = pkt_buf::to_pkt(id, buf[..n].to_vec());
+                match send.write_all(&pkt).await {
+                    Ok(_) => {}
+                    Err(quinn::WriteError::ConnectionLost(_)) => break,
+                    Err(e) => return Err(e.into()),
+                };
             }
-            Err(e) => {
-                log::error!("pipe_tcp_to_quic: {:?}", e);
-                break;
-            }
+            Err(e) => return Err(e.into()),
         }
     }
+    Ok(())
 }
 
 pub async fn pipe_quic_to_std(
     mut recv: quinn::RecvStream,
+    mut ack: quinn::SendStream,
     mut send: tokio::io::BufWriter<tokio::io::Stdout>,
-) {
-    let mut buf = [0; 2048];
+) -> Result<()> {
+    let mut buf = [0; CHUNK_SIZE];
+    let mut databuf = pkt_buf::DataBuf::new();
     loop {
         match recv.read(&mut buf).await {
             Ok(None) => break,
             Ok(Some(0)) => break,
             Ok(Some(n)) => {
                 log::debug!("quic recv {} bytes", n);
-                if let Err(e) = send.write_all(&buf[..n]).await {
-                    log::error!("pipe_quic_to_std: {:?}", e);
-                    break;
-                }
-                if let Err(e) = send.flush().await {
-                    log::error!("pipe_quic_to_std: {:?}", e);
-                    break;
+                databuf.push(buf[..n].to_vec());
+                loop {
+                    match databuf.next() {
+                        Some((id, d)) => {
+                            send.write_all(&d).await?;
+                            send.flush().await?;
+                            ack.write_all(&pkt_buf::to_ack_pkt(id)).await?;
+                        }
+                        None => break,
+                    }
                 }
             }
             Err(quinn::ReadError::ConnectionLost(_)) => {
                 break;
             }
-            Err(e) => {
-                log::error!("pipe_quic_to_std: {:?}", e);
-                break;
-            }
+            Err(e) => return Err(e.into()),
         }
     }
+    Ok(())
 }
 
 pub async fn pipe_std_to_quic(
     mut recv: tokio::io::BufReader<tokio::io::Stdin>,
     mut send: quinn::SendStream,
-) {
-    let mut buf = [0; 2048];
+    q: Arc<Mutex<queue::Queue>>,
+) -> Result<()> {
+    let mut buf = [0; CHUNK_SIZE];
     loop {
         match recv.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
                 log::debug!("std recv {} bytes", n);
-                if let Err(e) = send.write_all(&buf[..n]).await {
-                    log::error!("pipe_std_to_quic: {:?}", e);
-                    break;
-                }
+                let id = q.lock().await.push(buf[..n].to_vec())?;
+                let pkt = pkt_buf::to_pkt(id, buf[..n].to_vec());
+                match send.write_all(&pkt).await {
+                    Ok(_) => {}
+                    Err(quinn::WriteError::ConnectionLost(_)) => break,
+                    Err(e) => return Err(e.into()),
+                };
             }
-            Err(e) => {
-                log::error!("pipe_std_to_quic: {:?}", e);
-                break;
-            }
+            Err(e) => return Err(e.into()),
         }
     }
+    Ok(())
+}
+
+pub async fn consume_ack(q: Arc<Mutex<queue::Queue>>, mut recv: quinn::RecvStream) -> Result<()> {
+    let mut buf = [0; CHUNK_SIZE];
+    let mut ackbuf = pkt_buf::AckBuf::new();
+    loop {
+        match recv.read(&mut buf).await {
+            Ok(None) => break,
+            Ok(Some(0)) => break,
+            Ok(Some(n)) => {
+                log::debug!("quic ack recv {} bytes", n);
+                ackbuf.push(buf[..n].to_vec());
+                loop {
+                    match ackbuf.next() {
+                        Some(id) => {
+                            q.lock().await.check(id)?;
+                        }
+                        None => break,
+                    }
+                }
+            }
+            Err(quinn::ReadError::ConnectionLost(_)) => {
+                break;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }

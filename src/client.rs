@@ -1,8 +1,9 @@
-use crate::utils;
+use crate::{queue, utils};
 use anyhow::Result;
 use clap::Parser;
 use std::net::ToSocketAddrs;
 use std::{sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 
 #[derive(Parser, Debug, Clone)]
 #[clap(name = "client")]
@@ -15,7 +16,7 @@ pub struct Opt {
     ipv6: bool,
 
     #[clap(long = "bufsize", short = 'b')]
-    bufsize: Option<usize>,
+    bufsize: Option<u32>,
 }
 
 pub async fn run(opt: Opt) -> Result<()> {
@@ -54,29 +55,64 @@ pub async fn run(opt: Opt) -> Result<()> {
     for target in targets.clone() {
         log::debug!("Connecting to {:?}", target);
         let conn = endpoint.connect(target, "localhost")?;
-        return handle_connection(opt, conn).await;
+        handle_connection(opt, conn).await?;
+        endpoint.wait_idle().await;
+        return Ok(());
     }
     return Err(anyhow::anyhow!("target not found"));
 }
 
-async fn handle_connection(_opt: Opt, conn: quinn::Connecting) -> Result<()> {
+async fn handle_connection(opt: Opt, conn: quinn::Connecting) -> Result<()> {
     let conn = conn.await?;
 
     let std_recv = tokio::io::BufReader::new(tokio::io::stdin());
     let std_send = tokio::io::BufWriter::new(tokio::io::stdout());
 
-    let (quic_send, quic_recv) = conn.accept_bi().await?;
-
-    let quic2tcp = utils::pipe_quic_to_std(quic_recv, std_send);
-    let tcp2quic = utils::pipe_std_to_quic(std_recv, quic_send);
+    let bufsize = match opt.bufsize {
+        Some(bufsize) => bufsize,
+        None => u32::MAX,
+    };
+    let tx = handle_connection_tx(conn.clone(), std_recv, bufsize);
+    let rx = handle_connection_rx(conn.clone(), std_send);
     let signal_thread = utils::stop_signal_wait();
 
     tokio::select! {
-        _ = quic2tcp => {}
-        _ = tcp2quic => {}
+        val = tx => val?,
+        val = rx => val?,
         _ = signal_thread => {}
     }
     log::debug!("Connection Closed");
+
+    Ok(())
+}
+
+async fn handle_connection_tx(
+    conn: quinn::Connection,
+    std_recv: tokio::io::BufReader<tokio::io::Stdin>,
+    bufsize: u32,
+) -> Result<()> {
+    let q = Arc::new(Mutex::new(queue::Queue::new(bufsize)));
+    let (quic_send, quic_recv) = conn.open_bi().await?;
+    let std2quic = utils::pipe_std_to_quic(std_recv, quic_send, q.clone());
+    let quicack = utils::consume_ack(q, quic_recv);
+
+    tokio::select! {
+        val = std2quic => val?,
+        val = quicack => val?,
+    }
+
+    Ok(())
+}
+async fn handle_connection_rx(
+    conn: quinn::Connection,
+    std_send: tokio::io::BufWriter<tokio::io::Stdout>,
+) -> Result<()> {
+    let (quic_send, quic_recv) = conn.accept_bi().await?;
+    let quic2std = utils::pipe_quic_to_std(quic_recv, quic_send, std_send);
+
+    tokio::select! {
+        val = quic2std => val?,
+    }
 
     Ok(())
 }

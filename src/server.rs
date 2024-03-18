@@ -1,7 +1,8 @@
-use crate::utils;
+use crate::{queue, utils};
 use anyhow::Result;
 use clap::Parser;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 
 #[derive(Parser, Debug, Clone)]
 #[clap(name = "server")]
@@ -13,7 +14,7 @@ pub struct Opt {
     forward: String,
 
     #[clap(long = "bufsize", short = 'b')]
-    bufsize: Option<usize>,
+    bufsize: Option<u32>,
 }
 
 pub async fn run(opt: Opt) -> Result<()> {
@@ -61,16 +62,48 @@ async fn handle_connection(opt: Opt, conn: quinn::Connecting) -> Result<()> {
     let ssh_stream = tokio::net::TcpStream::connect(opt.forward).await?;
     let (ssh_recv, ssh_send) = tokio::io::split(ssh_stream);
 
-    let (quic_send, quic_recv) = conn.open_bi().await?;
-
-    let quic2tcp = utils::pipe_quic_to_tcp(quic_recv, ssh_send);
-    let tcp2quic = utils::pipe_tcp_to_quic(ssh_recv, quic_send);
+    let bufsize = match opt.bufsize {
+        Some(bufsize) => bufsize,
+        None => u32::MAX,
+    };
+    let tx = handle_connection_tx(conn.clone(), ssh_recv, bufsize);
+    let rx = handle_connection_rx(conn.clone(), ssh_send);
 
     tokio::select! {
-        _ = quic2tcp => {}
-        _ = tcp2quic => {}
+        val = tx => val?,
+        val = rx => val?,
     }
     log::debug!("Connection Closed");
 
+    Ok(())
+}
+
+async fn handle_connection_tx(
+    conn: quinn::Connection,
+    ssh_recv: tokio::io::ReadHalf<tokio::net::TcpStream>,
+    bufsize: u32,
+) -> Result<()> {
+    let q = Arc::new(Mutex::new(queue::Queue::new(bufsize)));
+    let (quic_send, quic_recv) = conn.open_bi().await?;
+    let tcp2quic = utils::pipe_tcp_to_quic(ssh_recv, quic_send, q.clone());
+    let quicack = utils::consume_ack(q, quic_recv);
+
+    tokio::select! {
+        val = tcp2quic => val?,
+        val = quicack => val?,
+    }
+    Ok(())
+}
+
+async fn handle_connection_rx(
+    conn: quinn::Connection,
+    std_send: tokio::io::WriteHalf<tokio::net::TcpStream>,
+) -> Result<()> {
+    let (quic_send, quic_recv) = conn.accept_bi().await?;
+    let quic2tcp = utils::pipe_quic_to_tcp(quic_recv, quic_send, std_send);
+
+    tokio::select! {
+        val = quic2tcp => val?,
+    }
     Ok(())
 }

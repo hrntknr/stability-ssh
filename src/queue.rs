@@ -2,12 +2,12 @@ use anyhow::Result;
 
 pub struct Queue {
     q: std::collections::VecDeque<Vec<u8>>,
-    head: usize,
-    max: usize,
+    head: u32,
+    max: u32,
 }
 
 impl Queue {
-    pub fn new(max: usize) -> Self {
+    pub fn new(max: u32) -> Self {
         Self {
             q: std::collections::VecDeque::new(),
             head: 0,
@@ -15,9 +15,9 @@ impl Queue {
         }
     }
 
-    pub fn check(&mut self, idx: usize) -> Result<()> {
+    pub fn check(&mut self, idx: u32) -> Result<()> {
         let cnt = (self.max + idx - self.head) % self.max + 1;
-        if self.q.len() < cnt {
+        if self.len() < cnt {
             return Err(anyhow::anyhow!("invalid idx"));
         }
         for _ in 0..cnt {
@@ -28,20 +28,20 @@ impl Queue {
         Ok(())
     }
 
-    pub fn push(&mut self, buf: Vec<u8>) -> Result<usize> {
-        if self.q.len() == self.max {
+    pub fn push(&mut self, buf: Vec<u8>) -> Result<u32> {
+        if self.len() == self.max {
             return Err(anyhow::anyhow!("full"));
         }
         self.q.push_back(buf);
 
-        let idx = (self.head + self.q.len() - 1) % self.max;
+        let idx = (self.head + self.len() - 1) % self.max;
         Ok(idx)
     }
 
-    pub fn len(&self) -> usize {
-        self.q.len()
+    pub fn len(&self) -> u32 {
+        self.q.len() as u32
     }
-    pub fn head(&self) -> usize {
+    pub fn head(&self) -> u32 {
         self.head
     }
 }

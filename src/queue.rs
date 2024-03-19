@@ -16,7 +16,7 @@ impl Queue {
     }
 
     pub fn check(&mut self, idx: u32) -> Result<()> {
-        let cnt = (self.max + idx - self.head) % self.max + 1;
+        let cnt = (idx.wrapping_sub(self.head)) % self.max + 1;
         if self.len() < cnt {
             return Err(anyhow::anyhow!("invalid idx"));
         }
@@ -75,5 +75,20 @@ mod tests {
         assert!(matches!(q.check(1), Err(_)));
         assert_eq!(q.len(), 0);
         assert_eq!(q.head(), 1);
+    }
+
+    #[test]
+    fn test_overflow() {
+        let mut q = super::Queue::new(u32::MAX);
+        assert!(matches!(q.push(vec![1]), Ok(0)));
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.head(), 0);
+        assert!(matches!(q.check(0), Ok(())));
+        assert_eq!(q.len(), 0);
+        assert_eq!(q.head(), 1);
+        assert!(matches!(q.check(1), Err(_)));
+        assert_eq!(q.len(), 0);
+        assert_eq!(q.head(), 1);
+        assert!(matches!(q.push(vec![2]), Ok(1)));
     }
 }

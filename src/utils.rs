@@ -1,6 +1,9 @@
 use crate::{pkt_buf, queue};
 use anyhow::Result;
-use std::sync::Arc;
+use std::{
+    net::{SocketAddr, ToSocketAddrs},
+    sync::Arc,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::Mutex,
@@ -20,6 +23,23 @@ pub fn gen_cert() -> Result<(Vec<u8>, Vec<u8>)> {
     Ok((cert_der, priv_key))
 }
 
+pub fn resolve(target: &str, only4: bool, only6: bool) -> Result<Vec<SocketAddr>> {
+    let targets = target.to_socket_addrs()?;
+    let targets = targets.filter(|addr| {
+        if !only4 && !only6 {
+            return true;
+        }
+        if only4 {
+            return addr.is_ipv4();
+        }
+        if only4 {
+            return addr.is_ipv6();
+        }
+        false
+    });
+    let targets = targets.collect::<Vec<SocketAddr>>();
+    Ok(targets)
+}
 pub struct SkipClientVerification;
 
 impl SkipClientVerification {
@@ -64,7 +84,7 @@ impl rustls::client::ServerCertVerifier for SkipServerVerification {
     }
 }
 
-pub fn x509pubkey(cert: rustls::Certificate) -> Result<Vec<u8>> {
+pub fn x509pubkey(cert: &rustls::Certificate) -> Result<Vec<u8>> {
     let (_, peer) = x509_parser::prelude::X509Certificate::from_der(&cert.0)?;
     Ok(peer.public_key().subject_public_key.data.to_vec())
 }
@@ -88,78 +108,69 @@ async fn signal(sig: tokio::signal::unix::SignalKind) {
     f.recv().await;
 }
 
-pub async fn pipe_quic_to_tcp(
-    mut recv: quinn::RecvStream,
-    mut ack: quinn::SendStream,
-    mut send: tokio::io::WriteHalf<tokio::net::TcpStream>,
+pub async fn handle_connection<
+    Reader: tokio::io::AsyncRead + Send + Sync + Unpin,
+    Writer: tokio::io::AsyncWrite + Send + Sync + Unpin,
+>(
+    bufsize: u32,
+    conn: quinn::Connection,
+    recv: Reader,
+    send: Writer,
 ) -> Result<()> {
-    let mut buf = [0; CHUNK_SIZE];
-    let mut databuf = pkt_buf::DataBuf::new();
-    loop {
-        match recv.read(&mut buf).await {
-            Ok(None) => break,
-            Ok(Some(0)) => break,
-            Ok(Some(n)) => {
-                log::debug!("quic recv {} bytes", n);
+    let tx = handle_connection_tx(conn.clone(), recv, bufsize);
+    let rx = handle_connection_rx(conn.clone(), send);
 
-                databuf.push(buf[..n].to_vec());
-                loop {
-                    match databuf.next() {
-                        Some((id, d)) => {
-                            send.write_all(&d).await?;
-                            ack.write_all(&pkt_buf::to_ack_pkt(id)).await?;
-                        }
-                        None => break,
-                    }
-                }
-            }
-            Err(quinn::ReadError::ConnectionLost(_)) => {
-                break;
-            }
-            Err(e) => return Err(e.into()),
-        }
+    tokio::select! {
+        val = tx => {val?;},
+        val = rx => {val?;},
     }
     Ok(())
 }
 
-pub async fn pipe_tcp_to_quic(
-    mut recv: tokio::io::ReadHalf<tokio::net::TcpStream>,
-    mut send: quinn::SendStream,
-    q: Arc<Mutex<queue::Queue>>,
+pub async fn handle_connection_tx<Reader: tokio::io::AsyncRead + Send + Sync + Unpin>(
+    conn: quinn::Connection,
+    recv: Reader,
+    bufsize: u32,
 ) -> Result<()> {
-    let mut buf = [0; CHUNK_SIZE];
-    loop {
-        match recv.read(&mut buf).await {
-            Ok(0) => break,
-            Ok(n) => {
-                log::debug!("tcp recv {} bytes", n);
-                let id = q.lock().await.push(buf[..n].to_vec())?;
-                let pkt = pkt_buf::to_pkt(id, buf[..n].to_vec());
-                match send.write_all(&pkt).await {
-                    Ok(_) => {}
-                    Err(quinn::WriteError::ConnectionLost(_)) => break,
-                    Err(e) => return Err(e.into()),
-                };
-            }
-            Err(e) => return Err(e.into()),
-        }
+    let q = Arc::new(Mutex::new(queue::Queue::new(bufsize)));
+    let (quic_send, quic_recv) = conn.open_bi().await?;
+    let reader2quic = pipe_reader_to_quic(recv, quic_send, q.clone());
+    let ack = consume_ack(q, quic_recv);
+
+    tokio::select! {
+        val = reader2quic => val?,
+        val = ack => val?,
     }
     Ok(())
 }
 
-pub async fn pipe_quic_to_std(
+pub async fn handle_connection_rx<Writer: tokio::io::AsyncWrite + Send + Sync + Unpin>(
+    conn: quinn::Connection,
+    send: Writer,
+) -> Result<()> {
+    let (quic_send, quic_recv) = conn.accept_bi().await?;
+    let quic2writer = pipe_quic_to_writer(quic_recv, quic_send, send);
+
+    tokio::select! {
+        val = quic2writer => val?,
+    }
+    Ok(())
+}
+
+pub async fn pipe_quic_to_writer<Writer: tokio::io::AsyncWrite + Send + Sync + Unpin>(
     mut recv: quinn::RecvStream,
     mut ack: quinn::SendStream,
-    mut send: tokio::io::BufWriter<tokio::io::Stdout>,
+    mut send: Writer,
 ) -> Result<()> {
     let mut buf = [0; CHUNK_SIZE];
     let mut databuf = pkt_buf::DataBuf::new();
     loop {
-        match recv.read(&mut buf).await {
-            Ok(None) => break,
-            Ok(Some(0)) => break,
-            Ok(Some(n)) => {
+        match recv.read(&mut buf).await? {
+            None => break,
+            Some(0) => break,
+            Some(n) => {
                 log::debug!("quic recv {} bytes", n);
+
                 databuf.push(buf[..n].to_vec());
                 loop {
                     match databuf.next() {
@@ -172,17 +183,13 @@ pub async fn pipe_quic_to_std(
                     }
                 }
             }
-            Err(quinn::ReadError::ConnectionLost(_)) => {
-                break;
-            }
-            Err(e) => return Err(e.into()),
         }
     }
     Ok(())
 }
 
-pub async fn pipe_std_to_quic(
-    mut recv: tokio::io::BufReader<tokio::io::Stdin>,
+pub async fn pipe_reader_to_quic<Reader: tokio::io::AsyncRead + Send + Sync + Unpin>(
+    mut recv: Reader,
     mut send: quinn::SendStream,
     q: Arc<Mutex<queue::Queue>>,
 ) -> Result<()> {
@@ -191,14 +198,10 @@ pub async fn pipe_std_to_quic(
         match recv.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
-                log::debug!("std recv {} bytes", n);
+                log::debug!("reader recv {} bytes", n);
                 let id = q.lock().await.push(buf[..n].to_vec())?;
                 let pkt = pkt_buf::to_pkt(id, buf[..n].to_vec());
-                match send.write_all(&pkt).await {
-                    Ok(_) => {}
-                    Err(quinn::WriteError::ConnectionLost(_)) => break,
-                    Err(e) => return Err(e.into()),
-                };
+                send.write_all(&pkt).await?;
             }
             Err(e) => return Err(e.into()),
         }
@@ -210,10 +213,10 @@ pub async fn consume_ack(q: Arc<Mutex<queue::Queue>>, mut recv: quinn::RecvStrea
     let mut buf = [0; CHUNK_SIZE];
     let mut ackbuf = pkt_buf::AckBuf::new();
     loop {
-        match recv.read(&mut buf).await {
-            Ok(None) => break,
-            Ok(Some(0)) => break,
-            Ok(Some(n)) => {
+        match recv.read(&mut buf).await? {
+            None => break,
+            Some(0) => break,
+            Some(n) => {
                 log::debug!("quic ack recv {} bytes", n);
                 ackbuf.push(buf[..n].to_vec());
                 loop {
@@ -225,10 +228,6 @@ pub async fn consume_ack(q: Arc<Mutex<queue::Queue>>, mut recv: quinn::RecvStrea
                     }
                 }
             }
-            Err(quinn::ReadError::ConnectionLost(_)) => {
-                break;
-            }
-            Err(e) => return Err(e.into()),
         }
     }
     Ok(())

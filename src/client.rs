@@ -14,13 +14,13 @@ pub struct Opt {
     #[clap(long = "keepalive", short = 'k', default_value = "1")]
     keepalive: u64,
 
-    #[clap(long = "bufsize", short = 'b')]
-    bufsize: Option<u32>,
+    #[clap(long = "bufsize", short = 'b', default_value = "4294967295")]
+    bufsize: u32,
 
-    #[clap(long = "ipv4", short = '4')]
+    #[clap(long = "only-ipv4", short = '4')]
     ipv4: bool,
 
-    #[clap(long = "ipv6", short = '6')]
+    #[clap(long = "only-ipv6", short = '6')]
     ipv6: bool,
 }
 
@@ -86,12 +86,7 @@ async fn handle_connection(
     std_recv: &mut tokio::io::BufReader<tokio::io::Stdin>,
     std_send: &mut tokio::io::BufWriter<tokio::io::Stdout>,
 ) -> Result<()> {
-    let bufsize = match opt.bufsize {
-        Some(bufsize) => bufsize,
-        None => u32::MAX,
-    };
-
-    utils::handle_connection(bufsize, conn.await?, std_recv, std_send).await?;
+    utils::handle_connection(opt.bufsize, conn.await?, std_recv, std_send).await?;
     Ok(())
 }
 

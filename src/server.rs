@@ -12,8 +12,8 @@ pub struct Opt {
     #[clap(long = "keepalive", short = 'k', default_value = "1")]
     keepalive: u64,
 
-    #[clap(long = "bufsize", short = 'b')]
-    bufsize: Option<u32>,
+    #[clap(long = "bufsize", short = 'b', default_value = "4294967295")]
+    bufsize: u32,
 
     #[clap(long = "listen", short = 'l', default_value = "0.0.0.0:2222")]
     listen: SocketAddr,
@@ -76,11 +76,6 @@ async fn handle_connection(
     mut conn_pool: pool::ConnPool,
     conn: quinn::Connecting,
 ) -> Result<()> {
-    let bufsize = match opt.bufsize {
-        Some(bufsize) => bufsize,
-        None => u32::MAX,
-    };
-
     let conn = conn.await?;
     let pubkey = utils::x509pubkey(
         &conn
@@ -105,7 +100,7 @@ async fn handle_connection(
 
     let mut ssh_conn = ssh_conn.lock().await;
     let (ssh_recv, ssh_send) = ssh_conn.split();
-    utils::handle_connection(bufsize, conn, ssh_recv, ssh_send).await?;
+    utils::handle_connection(opt.bufsize, conn, ssh_recv, ssh_send).await?;
 
     Ok(())
 }

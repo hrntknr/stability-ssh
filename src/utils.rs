@@ -25,6 +25,7 @@ pub fn gen_cert() -> Result<(Vec<u8>, Vec<u8>)> {
 
 pub fn resolve(target: &str, only4: bool, only6: bool) -> Result<Vec<SocketAddr>> {
     let targets = target.to_socket_addrs()?;
+    log::debug!("Resolved targets: {:?}", targets);
     let targets = targets.filter(|addr| {
         if !only4 && !only6 {
             return true;
@@ -32,7 +33,7 @@ pub fn resolve(target: &str, only4: bool, only6: bool) -> Result<Vec<SocketAddr>
         if only4 {
             return addr.is_ipv4();
         }
-        if only4 {
+        if only6 {
             return addr.is_ipv6();
         }
         false

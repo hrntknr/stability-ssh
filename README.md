@@ -4,6 +4,7 @@ StableSSH is a software to stabilize SSH communication by wrapping SSH with quic
 
 ## Features
 
+- Switching between Wifi/Priority is seamless.
 - Resistant to long communication breaks. (e.g., client terminal sleep)
   - Encap SSH with quic to increase stability.
   - There is an internal buffer to retry and retransmit connections.

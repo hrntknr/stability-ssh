@@ -74,12 +74,14 @@ Options:
 Usage: stablessh server [OPTIONS]
 
 Options:
-  -i, --idle <IDLE>            [default: 3]
-  -k, --keepalive <KEEPALIVE>  [default: 1]
-  -b, --bufsize <BUFSIZE>      [default: 32]
-  -l, --listen <LISTEN>        [default: 0.0.0.0:2222]
-  -f, --forward <FORWARD>      [default: localhost:22]
-  -h, --help                   Print help
+  -i, --idle <IDLE>                                    [default: 3]
+  -k, --keepalive <KEEPALIVE>                          [default: 1]
+  -b, --bufsize <BUFSIZE>                              [default: 18]
+  -t, --hold-timeout <HOLD_TIMEOUT>                    [default: 604800]
+  -c, --hold-collect-interval <HOLD_COLLECT_INTERVAL>  [default: 60]
+  -l, --listen <LISTEN>                                [default: 0.0.0.0:2222]
+  -f, --forward <FORWARD>                              [default: localhost:22]
+  -h, --help                                           Print help
 ```
 
 ## Performance

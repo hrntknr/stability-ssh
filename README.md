@@ -84,6 +84,6 @@ Options:
 
 ## About bufsize
 
-bufsize specifies the bit size of the buffer. (upper limit 32)
-The default value allows a packet to be buffered for 32-bit space, but it may consume infinite memory.
+bufsize specifies the bit size of the buffer. (upper limit 32)  
+The default value allows a packet to be buffered for 32-bit space, but it may consume infinite memory.  
 If memory usage is a concern, try reducing bufsize.

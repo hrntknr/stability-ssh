@@ -13,7 +13,7 @@ pub struct Opt {
     #[clap(long = "keepalive", short = 'k', default_value = "1")]
     keepalive: u64,
 
-    #[clap(long = "bufsize", short = 'b', default_value = "32")]
+    #[clap(long = "bufsize", short = 'b', default_value = "18")]
     bufsize: u8,
 
     #[clap(long = "listen", short = 'l', default_value = "0.0.0.0:2222")]

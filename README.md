@@ -87,3 +87,16 @@ Options:
 bufsize specifies the bit size of the buffer. (upper limit 32)  
 The default value allows a packet to be buffered for 32-bit space, but it may consume infinite memory.  
 If memory usage is a concern, try reducing bufsize.
+
+`(max memory size) = 4096 * 2 ^ (bufsize) [byte]`
+
+| bufsize | max memory |
+| ------- | ---------- |
+| 4       | 64K        |
+| 8       | 1M         |
+| 16      | 256M       |
+| 18      | 1G         |
+| 20      | 4G         |
+| 22      | 16G        |
+| 24      | 64G        |
+| 32      | 16T        |

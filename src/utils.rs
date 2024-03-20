@@ -113,15 +113,14 @@ pub async fn handle_connection<
     Reader: tokio::io::AsyncRead + Send + Sync + Unpin,
     Writer: tokio::io::AsyncWrite + Send + Sync + Unpin,
 >(
-    bufsize: u8,
     conn: quinn::Connection,
-    tx_ack: Arc<RwLock<u32>>,
-    rx_ack: Arc<RwLock<u32>>,
+    q: Arc<Mutex<queue::Queue>>,
+    last_ack: Arc<RwLock<u32>>,
     recv: Reader,
     send: Writer,
 ) -> Result<()> {
-    let tx = handle_connection_tx(conn.clone(), tx_ack, recv, bufsize);
-    let rx = handle_connection_rx(conn.clone(), rx_ack, send);
+    let tx = handle_connection_tx(conn.clone(), recv, q);
+    let rx = handle_connection_rx(conn.clone(), last_ack, send);
 
     tokio::select! {
         val = tx => {val?;},
@@ -132,16 +131,14 @@ pub async fn handle_connection<
 
 pub async fn handle_connection_tx<Reader: tokio::io::AsyncRead + Send + Sync + Unpin>(
     conn: quinn::Connection,
-    last_ack: Arc<RwLock<u32>>,
     recv: Reader,
-    bufsize: u8,
+    q: Arc<Mutex<queue::Queue>>,
 ) -> Result<()> {
-    let q = Arc::new(Mutex::new(queue::Queue::new(bufsize)));
     let (mut quic_send, mut quic_recv) = conn.accept_bi().await?;
     send_buf(q.clone(), &mut quic_recv, &mut quic_send).await?;
 
     let reader2quic = pipe_reader_to_quic(recv, quic_send, q.clone());
-    let ack = consume_ack(last_ack, q, quic_recv);
+    let ack = consume_ack(q, quic_recv);
 
     tokio::select! {
         val = reader2quic => val?,
@@ -156,9 +153,9 @@ pub async fn handle_connection_rx<Writer: tokio::io::AsyncWrite + Send + Sync + 
     send: Writer,
 ) -> Result<()> {
     let (mut quic_send, quic_recv) = conn.open_bi().await?;
-    request_buf(last_ack, &mut quic_send).await?;
+    request_buf(last_ack.clone(), &mut quic_send).await?;
 
-    let quic2writer = pipe_quic_to_writer(quic_recv, quic_send, send);
+    let quic2writer = pipe_quic_to_writer(quic_recv, quic_send, last_ack, send);
 
     tokio::select! {
         val = quic2writer => val?,
@@ -198,6 +195,7 @@ pub async fn send_buf(
 pub async fn pipe_quic_to_writer<Writer: tokio::io::AsyncWrite + Send + Sync + Unpin>(
     mut recv: quinn::RecvStream,
     mut ack: quinn::SendStream,
+    last_ack: Arc<RwLock<u32>>,
     mut send: Writer,
 ) -> Result<()> {
     let mut buf = [0; CHUNK_SIZE];
@@ -216,6 +214,8 @@ pub async fn pipe_quic_to_writer<Writer: tokio::io::AsyncWrite + Send + Sync + U
                             send.write_all(&d).await?;
                             send.flush().await?;
                             ack.write_all(&pkt_buf::to_ack_pkt(id)).await?;
+                            let mut last_ack = last_ack.write().await;
+                            *last_ack = id;
                         }
                         None => break,
                     }
@@ -238,7 +238,6 @@ pub async fn pipe_reader_to_quic<Reader: tokio::io::AsyncRead + Send + Sync + Un
             Ok(n) => {
                 log::debug!("reader recv {} bytes", n);
                 let id = q.lock().await.push(buf[..n].to_vec())?;
-                log::debug!("pushed q: {}", id);
                 let pkt = pkt_buf::to_pkt(id, buf[..n].to_vec());
                 send.write_all(&pkt).await?;
             }
@@ -248,11 +247,7 @@ pub async fn pipe_reader_to_quic<Reader: tokio::io::AsyncRead + Send + Sync + Un
     Ok(())
 }
 
-pub async fn consume_ack(
-    last_ack: Arc<RwLock<u32>>,
-    q: Arc<Mutex<queue::Queue>>,
-    mut recv: quinn::RecvStream,
-) -> Result<()> {
+pub async fn consume_ack(q: Arc<Mutex<queue::Queue>>, mut recv: quinn::RecvStream) -> Result<()> {
     let mut buf = [0; CHUNK_SIZE];
     let mut ackbuf = pkt_buf::AckBuf::new();
     loop {
@@ -265,10 +260,7 @@ pub async fn consume_ack(
                 loop {
                     match ackbuf.next() {
                         Some(id) => {
-                            log::debug!("consume ack: {}", id);
                             q.lock().await.check(id)?;
-                            let mut last_ack = last_ack.write().await;
-                            *last_ack = id;
                         }
                         None => break,
                     }

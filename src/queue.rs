@@ -38,17 +38,20 @@ impl Queue {
     }
 
     pub fn push(&mut self, buf: Vec<u8>) -> Result<u32> {
+        let vidx = self.vidx(self.len());
+        log::debug!("push: {} {}", vidx, self.len());
         if self.len() > self.max {
             return Err(anyhow::anyhow!("full"));
         }
         self.q.push_back(buf);
-        Ok(self.vidx(self.len() - 1))
+        Ok(vidx)
     }
 
     pub fn check(&mut self, vidx: u32) -> Result<()> {
+        log::debug!("check: {}", vidx);
         let idx = self.idx(vidx);
         if self.len() <= idx {
-            return Err(anyhow::anyhow!("invalid idx"));
+            return Err(anyhow::anyhow!("invalid idx: {}", vidx));
         }
         for _ in 0..=idx {
             self.q.pop_front();
@@ -59,9 +62,10 @@ impl Queue {
     }
 
     pub fn list(&self, vidx: u32) -> Result<Vec<(u32, Vec<u8>)>> {
+        log::debug!("list: {}", vidx);
         let idx = self.add(self.idx(vidx), 1);
         if self.len() < idx {
-            return Err(anyhow::anyhow!("invalid idx"));
+            return Err(anyhow::anyhow!("invalid idx: {}", vidx));
         }
         let mut ret = Vec::new();
         for i in idx..self.len() {
@@ -86,6 +90,16 @@ mod tests {
         let q2 = super::Queue::new(32);
         assert_eq!(q2.add(u32::MAX, 1), 0);
         assert_eq!(q2.add(u32::MAX, u32::MAX), u32::MAX - 1);
+    }
+    #[test]
+    fn test_queue_simple() {
+        let mut q = super::Queue::new(8);
+        assert_eq!(q.list(0).unwrap().len(), 0);
+        assert!(matches!(q.push(vec![3]), Ok(1)));
+        assert!(matches!(q.check(1), Ok(())));
+        assert!(matches!(q.push(vec![3]), Ok(2)));
+        assert!(matches!(q.push(vec![3]), Ok(3)));
+        assert_eq!(q.list(2).unwrap().len(), 1);
     }
     #[test]
     fn test_queue() {

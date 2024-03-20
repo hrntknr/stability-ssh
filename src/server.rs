@@ -1,4 +1,4 @@
-use crate::{pool, utils};
+use crate::{pool, queue, utils};
 use anyhow::Result;
 use clap::Parser;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
@@ -76,7 +76,7 @@ async fn handle_connection(
     opt: Opt,
     mut conn_pool: pool::ConnPool<(
         Arc<Mutex<tokio::net::TcpStream>>,
-        Arc<RwLock<u32>>,
+        Arc<Mutex<queue::Queue>>,
         Arc<RwLock<u32>>,
     )>,
     conn: quinn::Connecting,
@@ -91,7 +91,7 @@ async fn handle_connection(
             .first()
             .unwrap(),
     )?;
-    let (ssh_conn, tx_ack, rx_ack) = match conn_pool.get(pubkey.clone()).await {
+    let (ssh_conn, q, last_ack) = match conn_pool.get(pubkey.clone()).await {
         Some(v) => {
             log::debug!("Reusing connection for {:?}", pubkey);
             v
@@ -101,10 +101,11 @@ async fn handle_connection(
             let ssh_conn = Arc::new(Mutex::new(
                 tokio::net::TcpStream::connect(opt.forward).await?,
             ));
-            let tx_ack = Arc::new(RwLock::new(0_u32));
-            let rx_ack = Arc::new(RwLock::new(0_u32));
+            let q = Arc::new(Mutex::new(queue::Queue::new(opt.bufsize)));
+            let last_ack = Arc::new(RwLock::new(0_u32));
+
             conn_pool
-                .insert(pubkey.clone(), (ssh_conn, tx_ack, rx_ack))
+                .insert(pubkey.clone(), (ssh_conn, q, last_ack))
                 .await
                 .unwrap()
         }
@@ -112,7 +113,7 @@ async fn handle_connection(
 
     let mut ssh_conn = ssh_conn.lock().await;
     let (ssh_recv, ssh_send) = ssh_conn.split();
-    utils::handle_connection(opt.bufsize, conn, tx_ack, rx_ack, ssh_recv, ssh_send).await?;
+    utils::handle_connection(conn, q, last_ack, ssh_recv, ssh_send).await?;
 
     Ok(())
 }

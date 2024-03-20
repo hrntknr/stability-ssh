@@ -1,8 +1,8 @@
-use crate::utils;
+use crate::{queue, utils};
 use anyhow::Result;
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 #[derive(Parser, Debug, Clone)]
 #[clap(name = "client")]
@@ -56,8 +56,8 @@ pub async fn run(opt: Opt) -> Result<()> {
 async fn connect(opt: Opt, endpoint: quinn::Endpoint) -> Result<()> {
     let mut std_recv = tokio::io::BufReader::new(tokio::io::stdin());
     let mut std_send = tokio::io::BufWriter::new(tokio::io::stdout());
-    let tx_ack = Arc::new(RwLock::new(0_u32));
-    let rx_ack = Arc::new(RwLock::new(0_u32));
+    let q = Arc::new(Mutex::new(queue::Queue::new(opt.bufsize)));
+    let last_ack = Arc::new(RwLock::new(0_u32));
     let targets = utils::resolve(&opt.target, opt.ipv4, opt.ipv6)?;
     'outer: loop {
         for target in targets.clone() {
@@ -67,10 +67,9 @@ async fn connect(opt: Opt, endpoint: quinn::Endpoint) -> Result<()> {
                 Err(_) => continue,
             };
             match handle_connection(
-                opt.clone(),
                 conn,
-                tx_ack.clone(),
-                rx_ack.clone(),
+                q.clone(),
+                last_ack.clone(),
                 &mut std_recv,
                 &mut std_send,
             )
@@ -93,15 +92,14 @@ async fn connect(opt: Opt, endpoint: quinn::Endpoint) -> Result<()> {
 }
 
 async fn handle_connection(
-    opt: Opt,
     conn: quinn::Connecting,
-    tx_ack: Arc<RwLock<u32>>,
-    rx_ack: Arc<RwLock<u32>>,
+    q: Arc<Mutex<queue::Queue>>,
+    last_ack: Arc<RwLock<u32>>,
     std_recv: &mut tokio::io::BufReader<tokio::io::Stdin>,
     std_send: &mut tokio::io::BufWriter<tokio::io::Stdout>,
 ) -> Result<()> {
     let conn = conn.await?;
-    utils::handle_connection(opt.bufsize, conn, tx_ack, rx_ack, std_recv, std_send).await?;
+    utils::handle_connection(conn, q, last_ack, std_recv, std_send).await?;
     Ok(())
 }
 
@@ -129,20 +127,10 @@ fn is_retry(e: &anyhow::Error) -> bool {
     if matches!(e.downcast_ref(), Some(quinn::ConnectionError::TimedOut)) {
         return true;
     }
-    if matches!(
-        e.downcast_ref(),
-        Some(quinn::WriteError::ConnectionLost(
-            quinn::ConnectionError::TimedOut
-        ))
-    ) {
+    if matches!(e.downcast_ref(), Some(quinn::WriteError::ConnectionLost(_))) {
         return true;
     }
-    if matches!(
-        e.downcast_ref(),
-        Some(quinn::ReadError::ConnectionLost(
-            quinn::ConnectionError::TimedOut
-        ))
-    ) {
+    if matches!(e.downcast_ref(), Some(quinn::ReadError::ConnectionLost(_))) {
         return true;
     }
     false

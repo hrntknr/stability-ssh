@@ -2,6 +2,7 @@ use crate::{pool, utils};
 use anyhow::Result;
 use clap::Parser;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
+use tokio::sync::{Mutex, RwLock};
 
 #[derive(Parser, Debug, Clone)]
 #[clap(name = "server")]
@@ -12,8 +13,8 @@ pub struct Opt {
     #[clap(long = "keepalive", short = 'k', default_value = "1")]
     keepalive: u64,
 
-    #[clap(long = "bufsize", short = 'b', default_value = "4294967295")]
-    bufsize: u32,
+    #[clap(long = "bufsize", short = 'b', default_value = "32")]
+    bufsize: u8,
 
     #[clap(long = "listen", short = 'l', default_value = "0.0.0.0:2222")]
     listen: SocketAddr,
@@ -73,7 +74,11 @@ async fn accept_loop(opt: Opt, endpoint: quinn::Endpoint) -> Result<()> {
 
 async fn handle_connection(
     opt: Opt,
-    mut conn_pool: pool::ConnPool,
+    mut conn_pool: pool::ConnPool<(
+        Arc<Mutex<tokio::net::TcpStream>>,
+        Arc<RwLock<u32>>,
+        Arc<RwLock<u32>>,
+    )>,
     conn: quinn::Connecting,
 ) -> Result<()> {
     let conn = conn.await?;
@@ -86,21 +91,28 @@ async fn handle_connection(
             .first()
             .unwrap(),
     )?;
-    let ssh_conn = match conn_pool.get(pubkey.clone()).await {
-        Some(ssh_conn) => {
+    let (ssh_conn, tx_ack, rx_ack) = match conn_pool.get(pubkey.clone()).await {
+        Some(v) => {
             log::debug!("Reusing connection for {:?}", pubkey);
-            ssh_conn
+            v
         }
         None => {
             log::debug!("Creating new connection for {:?}", pubkey);
-            let ssh_conn = tokio::net::TcpStream::connect(opt.forward).await?;
-            conn_pool.insert(pubkey.clone(), ssh_conn).await.unwrap()
+            let ssh_conn = Arc::new(Mutex::new(
+                tokio::net::TcpStream::connect(opt.forward).await?,
+            ));
+            let tx_ack = Arc::new(RwLock::new(0_u32));
+            let rx_ack = Arc::new(RwLock::new(0_u32));
+            conn_pool
+                .insert(pubkey.clone(), (ssh_conn, tx_ack, rx_ack))
+                .await
+                .unwrap()
         }
     };
 
     let mut ssh_conn = ssh_conn.lock().await;
     let (ssh_recv, ssh_send) = ssh_conn.split();
-    utils::handle_connection(opt.bufsize, conn, ssh_recv, ssh_send).await?;
+    utils::handle_connection(opt.bufsize, conn, tx_ack, rx_ack, ssh_recv, ssh_send).await?;
 
     Ok(())
 }

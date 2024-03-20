@@ -2,6 +2,7 @@ use crate::utils;
 use anyhow::Result;
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
+use tokio::sync::RwLock;
 
 #[derive(Parser, Debug, Clone)]
 #[clap(name = "client")]
@@ -14,8 +15,8 @@ pub struct Opt {
     #[clap(long = "keepalive", short = 'k', default_value = "1")]
     keepalive: u64,
 
-    #[clap(long = "bufsize", short = 'b', default_value = "4294967295")]
-    bufsize: u32,
+    #[clap(long = "bufsize", short = 'b', default_value = "32")]
+    bufsize: u8,
 
     #[clap(long = "only-ipv4", short = '4')]
     ipv4: bool,
@@ -55,6 +56,8 @@ pub async fn run(opt: Opt) -> Result<()> {
 async fn connect(opt: Opt, endpoint: quinn::Endpoint) -> Result<()> {
     let mut std_recv = tokio::io::BufReader::new(tokio::io::stdin());
     let mut std_send = tokio::io::BufWriter::new(tokio::io::stdout());
+    let tx_ack = Arc::new(RwLock::new(0_u32));
+    let rx_ack = Arc::new(RwLock::new(0_u32));
     let targets = utils::resolve(&opt.target, opt.ipv4, opt.ipv6)?;
     'outer: loop {
         for target in targets.clone() {
@@ -63,7 +66,16 @@ async fn connect(opt: Opt, endpoint: quinn::Endpoint) -> Result<()> {
                 Ok(conn) => conn,
                 Err(_) => continue,
             };
-            match handle_connection(opt.clone(), conn, &mut std_recv, &mut std_send).await {
+            match handle_connection(
+                opt.clone(),
+                conn,
+                tx_ack.clone(),
+                rx_ack.clone(),
+                &mut std_recv,
+                &mut std_send,
+            )
+            .await
+            {
                 Ok(_) => return Ok(()),
                 Err(e) => {
                     if is_retry(&e) {
@@ -83,10 +95,13 @@ async fn connect(opt: Opt, endpoint: quinn::Endpoint) -> Result<()> {
 async fn handle_connection(
     opt: Opt,
     conn: quinn::Connecting,
+    tx_ack: Arc<RwLock<u32>>,
+    rx_ack: Arc<RwLock<u32>>,
     std_recv: &mut tokio::io::BufReader<tokio::io::Stdin>,
     std_send: &mut tokio::io::BufWriter<tokio::io::Stdout>,
 ) -> Result<()> {
-    utils::handle_connection(opt.bufsize, conn.await?, std_recv, std_send).await?;
+    let conn = conn.await?;
+    utils::handle_connection(opt.bufsize, conn, tx_ack, rx_ack, std_recv, std_send).await?;
     Ok(())
 }
 

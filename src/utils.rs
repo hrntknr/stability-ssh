@@ -6,7 +6,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::Mutex,
+    sync::{Mutex, RwLock},
 };
 use x509_parser::der_parser::asn1_rs::FromDer;
 
@@ -113,13 +113,15 @@ pub async fn handle_connection<
     Reader: tokio::io::AsyncRead + Send + Sync + Unpin,
     Writer: tokio::io::AsyncWrite + Send + Sync + Unpin,
 >(
-    bufsize: u32,
+    bufsize: u8,
     conn: quinn::Connection,
+    tx_ack: Arc<RwLock<u32>>,
+    rx_ack: Arc<RwLock<u32>>,
     recv: Reader,
     send: Writer,
 ) -> Result<()> {
-    let tx = handle_connection_tx(conn.clone(), recv, bufsize);
-    let rx = handle_connection_rx(conn.clone(), send);
+    let tx = handle_connection_tx(conn.clone(), tx_ack, recv, bufsize);
+    let rx = handle_connection_rx(conn.clone(), rx_ack, send);
 
     tokio::select! {
         val = tx => {val?;},
@@ -130,13 +132,16 @@ pub async fn handle_connection<
 
 pub async fn handle_connection_tx<Reader: tokio::io::AsyncRead + Send + Sync + Unpin>(
     conn: quinn::Connection,
+    last_ack: Arc<RwLock<u32>>,
     recv: Reader,
-    bufsize: u32,
+    bufsize: u8,
 ) -> Result<()> {
     let q = Arc::new(Mutex::new(queue::Queue::new(bufsize)));
-    let (quic_send, quic_recv) = conn.open_bi().await?;
+    let (mut quic_send, mut quic_recv) = conn.accept_bi().await?;
+    send_buf(q.clone(), &mut quic_recv, &mut quic_send).await?;
+
     let reader2quic = pipe_reader_to_quic(recv, quic_send, q.clone());
-    let ack = consume_ack(q, quic_recv);
+    let ack = consume_ack(last_ack, q, quic_recv);
 
     tokio::select! {
         val = reader2quic => val?,
@@ -147,13 +152,45 @@ pub async fn handle_connection_tx<Reader: tokio::io::AsyncRead + Send + Sync + U
 
 pub async fn handle_connection_rx<Writer: tokio::io::AsyncWrite + Send + Sync + Unpin>(
     conn: quinn::Connection,
+    last_ack: Arc<RwLock<u32>>,
     send: Writer,
 ) -> Result<()> {
-    let (quic_send, quic_recv) = conn.accept_bi().await?;
+    let (mut quic_send, quic_recv) = conn.open_bi().await?;
+    request_buf(last_ack, &mut quic_send).await?;
+
     let quic2writer = pipe_quic_to_writer(quic_recv, quic_send, send);
 
     tokio::select! {
         val = quic2writer => val?,
+    }
+    Ok(())
+}
+
+pub async fn request_buf(last_ack: Arc<RwLock<u32>>, send: &mut quinn::SendStream) -> Result<()> {
+    let last_ack = last_ack.read().await;
+    send.write_all(&last_ack.to_be_bytes()).await?;
+    Ok(())
+}
+
+pub async fn send_buf(
+    q: Arc<Mutex<queue::Queue>>,
+    recv: &mut quinn::RecvStream,
+    send: &mut quinn::SendStream,
+) -> Result<()> {
+    let mut buf = [0; 4];
+    match recv.read(&mut buf).await? {
+        None => return Err(anyhow::anyhow!("eof")),
+        Some(0) => return Err(anyhow::anyhow!("eof")),
+        Some(4) => {
+            let last_ack = u32::from_be_bytes(buf);
+            log::debug!("last_ack: {}", last_ack);
+            let list = q.lock().await.list(last_ack)?;
+            for (id, d) in list {
+                let pkt = pkt_buf::to_pkt(id, d);
+                send.write_all(&pkt).await?;
+            }
+        }
+        _ => return Err(anyhow::anyhow!("invalid buf")),
     }
     Ok(())
 }
@@ -201,6 +238,7 @@ pub async fn pipe_reader_to_quic<Reader: tokio::io::AsyncRead + Send + Sync + Un
             Ok(n) => {
                 log::debug!("reader recv {} bytes", n);
                 let id = q.lock().await.push(buf[..n].to_vec())?;
+                log::debug!("pushed q: {}", id);
                 let pkt = pkt_buf::to_pkt(id, buf[..n].to_vec());
                 send.write_all(&pkt).await?;
             }
@@ -210,7 +248,11 @@ pub async fn pipe_reader_to_quic<Reader: tokio::io::AsyncRead + Send + Sync + Un
     Ok(())
 }
 
-pub async fn consume_ack(q: Arc<Mutex<queue::Queue>>, mut recv: quinn::RecvStream) -> Result<()> {
+pub async fn consume_ack(
+    last_ack: Arc<RwLock<u32>>,
+    q: Arc<Mutex<queue::Queue>>,
+    mut recv: quinn::RecvStream,
+) -> Result<()> {
     let mut buf = [0; CHUNK_SIZE];
     let mut ackbuf = pkt_buf::AckBuf::new();
     loop {
@@ -223,7 +265,10 @@ pub async fn consume_ack(q: Arc<Mutex<queue::Queue>>, mut recv: quinn::RecvStrea
                 loop {
                     match ackbuf.next() {
                         Some(id) => {
+                            log::debug!("consume ack: {}", id);
                             q.lock().await.check(id)?;
+                            let mut last_ack = last_ack.write().await;
+                            *last_ack = id;
                         }
                         None => break,
                     }

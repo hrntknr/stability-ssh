@@ -10,7 +10,7 @@ use tokio::{
 };
 use x509_parser::der_parser::asn1_rs::FromDer;
 
-const CHUNK_SIZE: usize = u16::MAX as usize;
+const CHUNK_SIZE: usize = 4096;
 
 pub fn gen_cert() -> Result<(Vec<u8>, Vec<u8>)> {
     let host: String = match hostname::get()?.into_string() {

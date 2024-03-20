@@ -1,6 +1,7 @@
 use crate::{pool, queue, utils};
 use anyhow::Result;
 use clap::Parser;
+use core::time;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::{Mutex, RwLock};
 
@@ -15,6 +16,12 @@ pub struct Opt {
 
     #[clap(long = "bufsize", short = 'b', default_value = "18")]
     bufsize: u8,
+
+    #[clap(long = "hold-timeout", short = 't', default_value = "604800")]
+    hold_timeout: u64,
+
+    #[clap(long = "hold-collect-interval", short = 'c', default_value = "60")]
+    hold_collect_interval: u64,
 
     #[clap(long = "listen", short = 'l', default_value = "0.0.0.0:2222")]
     listen: SocketAddr,
@@ -54,7 +61,11 @@ pub async fn run(opt: Opt) -> Result<()> {
 }
 
 async fn accept_loop(opt: Opt, endpoint: quinn::Endpoint) -> Result<()> {
-    let conn_pool = pool::ConnPool::new();
+    let conn_pool = pool::ConnPool::new(opt.hold_timeout);
+    pool::collect_loop(
+        conn_pool.clone(),
+        time::Duration::from_secs(opt.hold_collect_interval),
+    );
     tokio::spawn(async move {
         while let Some(conn) = endpoint.accept().await {
             let fut = handle_connection(opt.clone(), conn_pool.clone(), conn);
@@ -113,6 +124,7 @@ async fn handle_connection(
 
     let mut ssh_conn = ssh_conn.lock().await;
     let (ssh_recv, ssh_send) = ssh_conn.split();
+    let _handle = conn_pool.hold(pubkey.clone()).await;
     utils::handle_connection(conn, q, last_ack, ssh_recv, ssh_send).await?;
 
     Ok(())

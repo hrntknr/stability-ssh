@@ -82,6 +82,19 @@ Options:
   -h, --help                   Print help
 ```
 
+## Performance
+
+StableSSH's main target is convenience over performance.  
+However, in light measurements, the performance was about 50% of that of ssh.
+
+```
+> $ scp ~/100m stablessh:
+100m                                                                   100%  100MB   5.4MB/s   00:18
+
+> $ scp ~/100m ssh:
+100m                                                                   100%  100MB  11.3MB/s   00:08
+```
+
 ## About bufsize
 
 bufsize specifies the bit size of the buffer. (upper limit 32)  

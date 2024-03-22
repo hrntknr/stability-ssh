@@ -128,9 +128,25 @@ fn is_retry(e: &anyhow::Error) -> bool {
         return true;
     }
     if matches!(e.downcast_ref(), Some(quinn::WriteError::ConnectionLost(_))) {
+        if matches!(
+            e.downcast_ref(),
+            Some(quinn::WriteError::ConnectionLost(
+                quinn::ConnectionError::ApplicationClosed(_)
+            ))
+        ) {
+            return false;
+        }
         return true;
     }
     if matches!(e.downcast_ref(), Some(quinn::ReadError::ConnectionLost(_))) {
+        if matches!(
+            e.downcast_ref(),
+            Some(quinn::ReadError::ConnectionLost(
+                quinn::ConnectionError::ApplicationClosed(_)
+            ))
+        ) {
+            return false;
+        }
         return true;
     }
     false

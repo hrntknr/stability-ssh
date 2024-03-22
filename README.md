@@ -1,6 +1,6 @@
 # Stable SSH
 
-StableSSH is a software to stabilize SSH communication by wrapping SSH with quic.
+It keeps the SSH connection alive even if the laptop is closed, the network is switched, or the communication is not stability.
 
 ## Features
 

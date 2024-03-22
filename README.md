@@ -30,6 +30,12 @@ Host target
   ProxyCommand stablessh client %h:%p
 ```
 
+### VSCode config (For remote ssh)
+
+```json
+"remote.SSH.useLocalServer": false,
+```
+
 ### Server daemon (systemd)
 
 ```

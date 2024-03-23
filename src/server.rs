@@ -149,6 +149,7 @@ async fn handle_connection(
     let (ssh_recv, ssh_send) = ssh_conn.split();
     let _handle = conn_pool.hold(pubkey.clone()).await;
     utils::handle_connection(conn, conn_info.q, conn_info.last_ack, ssh_recv, ssh_send).await?;
+    conn_pool.remove(pubkey.clone()).await;
 
     Ok(())
 }

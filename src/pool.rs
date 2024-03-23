@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
@@ -70,6 +71,21 @@ impl ConnPool {
     pub async fn list(&self) -> Vec<Vec<u8>> {
         let conns = self.conns.lock().await;
         conns.keys().cloned().collect()
+    }
+
+    pub async fn kill(&self, pubkey: Vec<u8>) -> Result<bool> {
+        let mut conns = self.conns.lock().await;
+        let conn = conns.get(&pubkey).clone();
+        if conn.is_some() {
+            let conn = conn.unwrap().conn.try_lock();
+            if conn.is_err() {
+                return Ok(false);
+            }
+        }
+        match conns.remove(&pubkey) {
+            Some(_) => Ok(true),
+            None => Err(anyhow::anyhow!("Connection not found")),
+        }
     }
 
     pub async fn last_active(&self, pubkey: Vec<u8>) -> Option<u64> {

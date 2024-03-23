@@ -21,7 +21,12 @@ enum Targets {
 #[derive(Subcommand, Debug, Clone)]
 enum OpCmd {
     List,
-    Kill,
+    Kill(KillOpt),
+}
+
+#[derive(Parser, Debug, Clone)]
+struct KillOpt {
+    id: String,
 }
 
 pub async fn run(opt: Opt) -> Result<()> {
@@ -50,8 +55,8 @@ pub async fn run(opt: Opt) -> Result<()> {
             });
             t.printstd();
         }
-        Targets::Conn(OpCmd::Kill) => {
-            client.conn_kill("1").await?;
+        Targets::Conn(OpCmd::Kill(kill_opt)) => {
+            client.conn_kill(&kill_opt.id).await?;
         }
     }
     Ok(())

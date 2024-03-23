@@ -42,8 +42,19 @@ impl proto::ctl_service_server::CtlService for CtlServiceImpl {
         &self,
         _req: tonic::Request<proto::ConnKillRequest>,
     ) -> Result<tonic::Response<proto::ConnKillResponse>, tonic::Status> {
-        let _pool = self.pool.lock().await;
-        Err(tonic::Status::unimplemented("Not implemented"))
+        let pool = self.pool.lock().await;
+        let pubkeys = pool.list().await;
+        let pubkey = pubkeys
+            .iter()
+            .find(|&k| utils::pubkey_to_id(k) == _req.get_ref().id);
+        if pubkey.is_none() {
+            return Err(tonic::Status::not_found("Connection not found"));
+        }
+        match pool.kill(pubkey.unwrap().clone()).await {
+            Ok(true) => Ok(tonic::Response::new(proto::ConnKillResponse {})),
+            Ok(false) => Err(tonic::Status::internal("Connection is in use")),
+            Err(e) => Err(tonic::Status::internal(e.to_string())),
+        }
     }
 }
 

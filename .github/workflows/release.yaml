@@ -8,6 +8,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
 jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish crate
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
   release:
     runs-on: ${{ matrix.job.os }}
     strategy:
@@ -34,7 +42,3 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: stablessh-${{ matrix.job.target }}
-      - name: Publish crate
-        run: cargo publish
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

@@ -1,5 +1,8 @@
 # Stable SSH
 
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/hrntknr/stablessh/build.yaml?branch=main&labelColor=1C2C2E&logo=github&style=flat-square)](https://github.com/hrntknr/stablessh/actions/workflows/build.yaml)
+[![Crates.io Version](https://img.shields.io/crates/v/stablessh?labelColor=1C2C2E&logo=rust&style=flat-square)](https://crates.io/crates/stablessh)
+
 It keeps the SSH connection alive even if the laptop is closed, the network is switched, or the communication is not stability.
 
 ## Features
@@ -21,6 +24,12 @@ It is influenced by the following software, but differs in some respects.
   - It is not ssh, so port forwarding, file transfer, vscode remote, etc. are not available.
 
 ## Usage
+
+### Installation
+
+```sh
+cargo install stablessh
+```
 
 ### Client config (sshconfig)
 

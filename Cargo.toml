@@ -11,7 +11,7 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1.0.81"
-clap = { version = "4.5.3", features = ["derive"] }
+clap = { version = "4.5.3", default-features = false, features = ["std", "derive"] }
 env_logger = "0.11.3"
 hostname = "0.3.1"
 log = "0.4.21"

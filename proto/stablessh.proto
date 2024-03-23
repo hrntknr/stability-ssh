@@ -1,0 +1,22 @@
+syntax = "proto3";
+package stablessh;
+
+service CtlService {
+  rpc ConnList(ConnListRequest) returns (ConnListResponse) {}
+  rpc ConnKill(ConnKillRequest) returns (ConnKillResponse) {}
+}
+
+message ConnInfo {
+  string id = 1;
+  optional string name = 2;
+  optional uint64 last_active = 3;
+  optional uint32 pkt_buf = 4;
+}
+
+message ConnListRequest {}
+
+message ConnListResponse { repeated ConnInfo conns = 1; }
+
+message ConnKillRequest { string id = 1; }
+
+message ConnKillResponse {}

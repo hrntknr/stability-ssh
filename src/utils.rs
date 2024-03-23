@@ -8,7 +8,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{Mutex, RwLock},
 };
-use x509_parser::der_parser::asn1_rs::FromDer;
+use x509_parser::{der_parser::asn1_rs::FromDer, extensions::GeneralName};
 
 const CHUNK_SIZE: usize = 4096;
 
@@ -85,9 +85,24 @@ impl rustls::client::ServerCertVerifier for SkipServerVerification {
     }
 }
 
-pub fn x509pubkey(cert: &rustls::Certificate) -> Result<Vec<u8>> {
+pub fn x509(cert: &rustls::Certificate) -> Result<(Vec<u8>, Option<String>)> {
     let (_, peer) = x509_parser::prelude::X509Certificate::from_der(&cert.0)?;
-    Ok(peer.public_key().subject_public_key.data.to_vec())
+
+    let name = match peer.subject_alternative_name()? {
+        Some(dns) => dns.value.general_names.iter().find_map(|name| match name {
+            GeneralName::DNSName(name) => Some(name.to_string()),
+            _ => None,
+        }),
+        _ => None,
+    };
+
+    Ok((peer.public_key().subject_public_key.data.to_vec(), name))
+}
+
+pub fn pubkey_to_id(pubkey: &[u8]) -> String {
+    let mut sum = sha256::digest(pubkey.to_vec());
+    sum.truncate(8);
+    sum
 }
 
 pub async fn stop_signal_wait() {

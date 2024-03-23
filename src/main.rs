@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use stablessh::{client, server};
+use stablessh::{client, ctl, server};
 
 #[derive(Parser, Debug)]
 struct Cli {
@@ -11,6 +11,7 @@ struct Cli {
 enum Commands {
     Server(server::Opt),
     Client(client::Opt),
+    Ctl(ctl::Opt),
 }
 
 #[tokio::main]
@@ -24,6 +25,10 @@ async fn main() {
             Err(e) => log::error!("{:?}", e),
         },
         Commands::Client(opt) => match client::run(opt).await {
+            Ok(_) => {}
+            Err(e) => log::error!("{:?}", e),
+        },
+        Commands::Ctl(opt) => match ctl::run(opt).await {
             Ok(_) => {}
             Err(e) => log::error!("{:?}", e),
         },

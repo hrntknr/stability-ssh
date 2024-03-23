@@ -8,7 +8,7 @@ pub struct Opt {
     #[command(subcommand)]
     target: Targets,
 
-    #[clap(long = "ctl-target", default_value = "http://localhost:50051")]
+    #[clap(long = "ctl-target", default_value = "http://[::1]:50051")]
     ctl_target: String,
 }
 

@@ -27,6 +27,14 @@ It is influenced by the following software, but differs in some respects.
 
 ### Installation
 
+For Mac(homebrew)
+
+```sh
+brew install hrntknr/tap/stablessh
+```
+
+For other platforms
+
 ```sh
 cargo install stablessh
 ```

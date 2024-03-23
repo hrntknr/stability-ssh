@@ -1,4 +1,4 @@
-use crate::{pool, queue, utils};
+use crate::{pool, proto_impl, queue, utils};
 use anyhow::Result;
 use clap::Parser;
 use core::time;
@@ -23,14 +23,43 @@ pub struct Opt {
     #[clap(long = "hold-collect-interval", short = 'c', default_value = "60")]
     hold_collect_interval: u64,
 
-    #[clap(long = "listen", short = 'l', default_value = "0.0.0.0:2222")]
+    #[clap(long = "listen", short = 'l', default_value = "[::]:2222")]
     listen: SocketAddr,
 
     #[clap(long = "forward", short = 'f', default_value = "localhost:22")]
     forward: String,
+
+    #[clap(long = "ctl-listen", default_value = "[::1]:50051")]
+    ctl_listen: SocketAddr,
 }
 
 pub async fn run(opt: Opt) -> Result<()> {
+    let conn_pool = pool::ConnPool::new(opt.hold_timeout);
+    pool::collect_loop(
+        conn_pool.clone(),
+        time::Duration::from_secs(opt.hold_collect_interval),
+    );
+    let ret = tokio::select! {
+        ret = server(opt.clone(), conn_pool.clone()) => ret,
+        ret = grpc_server(opt.clone(), conn_pool.clone()) => ret,
+    };
+
+    ret?;
+    Ok(())
+}
+
+async fn grpc_server(opt: Opt, pool: pool::ConnPool) -> Result<()> {
+    tonic::transport::Server::builder()
+        .add_service(crate::proto::ctl_service_server::CtlServiceServer::new(
+            proto_impl::CtlServiceImpl::new(pool),
+        ))
+        .serve(opt.ctl_listen)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn server(opt: Opt, pool: pool::ConnPool) -> Result<()> {
     let (cert_der, priv_key) = utils::gen_cert()?;
     let mut server_crypto = rustls::ServerConfig::builder()
         .with_safe_defaults()
@@ -52,7 +81,7 @@ pub async fn run(opt: Opt) -> Result<()> {
     }
 
     let endpoint = quinn::Endpoint::server(server_config, opt.listen)?;
-    accept_loop(opt, endpoint.clone()).await?;
+    accept_loop(opt, endpoint.clone(), pool).await?;
 
     endpoint.close(0_u8.into(), b"");
     endpoint.wait_idle().await;
@@ -60,15 +89,10 @@ pub async fn run(opt: Opt) -> Result<()> {
     Ok(())
 }
 
-async fn accept_loop(opt: Opt, endpoint: quinn::Endpoint) -> Result<()> {
-    let conn_pool = pool::ConnPool::new(opt.hold_timeout);
-    pool::collect_loop(
-        conn_pool.clone(),
-        time::Duration::from_secs(opt.hold_collect_interval),
-    );
+async fn accept_loop(opt: Opt, endpoint: quinn::Endpoint, pool: pool::ConnPool) -> Result<()> {
     tokio::spawn(async move {
         while let Some(conn) = endpoint.accept().await {
-            let fut = handle_connection(opt.clone(), conn_pool.clone(), conn);
+            let fut = handle_connection(opt.clone(), pool.clone(), conn);
             tokio::spawn(async move {
                 match fut.await {
                     Ok(_) => {}
@@ -85,15 +109,11 @@ async fn accept_loop(opt: Opt, endpoint: quinn::Endpoint) -> Result<()> {
 
 async fn handle_connection(
     opt: Opt,
-    mut conn_pool: pool::ConnPool<(
-        Arc<Mutex<tokio::net::TcpStream>>,
-        Arc<Mutex<queue::Queue>>,
-        Arc<RwLock<u32>>,
-    )>,
+    mut conn_pool: pool::ConnPool,
     conn: quinn::Connecting,
 ) -> Result<()> {
     let conn = conn.await?;
-    let pubkey = utils::x509pubkey(
+    let (pubkey, name) = utils::x509(
         &conn
             .peer_identity()
             .unwrap()
@@ -102,7 +122,7 @@ async fn handle_connection(
             .first()
             .unwrap(),
     )?;
-    let (ssh_conn, q, last_ack) = match conn_pool.get(pubkey.clone()).await {
+    let conn_info = match conn_pool.get(pubkey.clone()).await {
         Some(v) => {
             log::debug!("Reusing connection for {:?}", pubkey);
             v
@@ -116,16 +136,19 @@ async fn handle_connection(
             let last_ack = Arc::new(RwLock::new(0_u32));
 
             conn_pool
-                .insert(pubkey.clone(), (ssh_conn, q, last_ack))
+                .insert(
+                    pubkey.clone(),
+                    pool::ConnInfo::new(ssh_conn, q, last_ack, name),
+                )
                 .await
                 .unwrap()
         }
     };
 
-    let mut ssh_conn = ssh_conn.lock().await;
+    let mut ssh_conn = conn_info.conn.lock().await;
     let (ssh_recv, ssh_send) = ssh_conn.split();
     let _handle = conn_pool.hold(pubkey.clone()).await;
-    utils::handle_connection(conn, q, last_ack, ssh_recv, ssh_send).await?;
+    utils::handle_connection(conn, conn_info.q, conn_info.last_ack, ssh_recv, ssh_send).await?;
 
     Ok(())
 }

@@ -1,15 +1,39 @@
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 #[derive(Clone)]
-pub struct ConnPool<T: Clone + Send + Sync> {
+pub struct ConnPool {
     timer: tokio::time::Instant,
     hold_timeout: u64,
-    conns: Arc<Mutex<std::collections::HashMap<Vec<u8>, T>>>,
+    conns: Arc<Mutex<std::collections::HashMap<Vec<u8>, ConnInfo>>>,
     last_active: Arc<Mutex<std::collections::HashMap<Vec<u8>, u64>>>,
 }
 
-impl<T: Clone + Send + Sync> ConnPool<T> {
+#[derive(Clone)]
+pub struct ConnInfo {
+    pub conn: Arc<Mutex<tokio::net::TcpStream>>,
+    pub q: Arc<Mutex<crate::queue::Queue>>,
+    pub last_ack: Arc<RwLock<u32>>,
+    pub name: Option<String>,
+}
+
+impl ConnInfo {
+    pub fn new(
+        conn: Arc<Mutex<tokio::net::TcpStream>>,
+        q: Arc<Mutex<crate::queue::Queue>>,
+        last_ack: Arc<RwLock<u32>>,
+        name: Option<String>,
+    ) -> Self {
+        Self {
+            conn,
+            q,
+            last_ack,
+            name,
+        }
+    }
+}
+
+impl ConnPool {
     pub fn new(hold_timeout: u64) -> Self {
         Self {
             timer: tokio::time::Instant::now(),
@@ -27,12 +51,12 @@ impl<T: Clone + Send + Sync> ConnPool<T> {
         }
     }
 
-    pub async fn get(&mut self, pubkey: Vec<u8>) -> Option<T> {
+    pub async fn get(&mut self, pubkey: Vec<u8>) -> Option<ConnInfo> {
         let conns = self.conns.lock().await;
         conns.get(&pubkey).cloned()
     }
 
-    pub async fn insert(&self, pubkey: Vec<u8>, conn: T) -> Option<T> {
+    pub async fn insert(&self, pubkey: Vec<u8>, conn: ConnInfo) -> Option<ConnInfo> {
         let mut conns = self.conns.lock().await;
         conns.insert(pubkey.clone(), conn);
         conns.get(&pubkey).cloned()
@@ -41,6 +65,28 @@ impl<T: Clone + Send + Sync> ConnPool<T> {
     pub async fn remove(&self, pubkey: Vec<u8>) {
         let mut conns = self.conns.lock().await;
         conns.remove(&pubkey);
+    }
+
+    pub async fn list(&self) -> Vec<Vec<u8>> {
+        let conns = self.conns.lock().await;
+        conns.keys().cloned().collect()
+    }
+
+    pub async fn last_active(&self, pubkey: Vec<u8>) -> Option<u64> {
+        let last_active = self.last_active.lock().await;
+        let now = self.timer.elapsed().as_secs();
+        match last_active.get(&pubkey) {
+            Some(v) => Some(now - v),
+            None => None,
+        }
+    }
+
+    pub async fn qlen(&self, pubkey: Vec<u8>) -> Option<u32> {
+        let conns = self.conns.lock().await;
+        match conns.get(&pubkey) {
+            Some(v) => Some(v.q.lock().await.len()),
+            None => None,
+        }
     }
 
     pub async fn hold(&self, pubkey: Vec<u8>) -> ConnPoolHandle {
@@ -63,10 +109,7 @@ impl<T: Clone + Send + Sync> ConnPool<T> {
     }
 }
 
-pub fn collect_loop<T: Clone + Send + Sync + 'static>(
-    pool: ConnPool<T>,
-    interval: std::time::Duration,
-) {
+pub fn collect_loop(pool: ConnPool, interval: std::time::Duration) {
     let pool = pool.clone();
     tokio::spawn(async move {
         loop {
@@ -99,7 +142,7 @@ impl Drop for ConnPoolHandle {
 mod test {
     #[tokio::test]
     async fn test_handle() {
-        let pool = super::ConnPool::<u64>::new(10);
+        let pool = super::ConnPool::new(10);
         let pubkey = vec![1, 2, 3];
         let handle = pool.hold(pubkey.clone()).await;
         {

@@ -20,6 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
+          cd $(mktemp -d)
           wget https://github.com/protocolbuffers/protobuf/releases/download/v26.0/protoc-26.0-${{ matrix.job.protoc }}.zip
           unzip protoc-26.0-${{ matrix.job.protoc }}.zip
           sudo mv bin/protoc /usr/local/bin/
@@ -47,6 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
+          cd $(mktemp -d)
           wget https://github.com/protocolbuffers/protobuf/releases/download/v26.0/protoc-26.0-${{ matrix.job.protoc }}.zip
           unzip protoc-26.0-${{ matrix.job.protoc }}.zip
           sudo mv bin/protoc /usr/local/bin/

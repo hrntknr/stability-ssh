@@ -16,12 +16,12 @@ jobs:
         job:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            protoc_suffix: linux-x86_64
+            protoc: linux-x86_64
     steps:
       - uses: actions/checkout@v4
       - run: |
-          wget https://github.com/protocolbuffers/protobuf/releases/download/v26.0/protoc-26.0-${{ matrix.job.protoc_suffix }}.zip
-          unzip protoc-26.0-${{ matrix.job.protoc_suffix }}.zip
+          wget https://github.com/protocolbuffers/protobuf/releases/download/v26.0/protoc-26.0-${{ matrix.job.protoc }}.zip
+          unzip protoc-26.0-${{ matrix.job.protoc }}.zip
           sudo mv bin/protoc /usr/local/bin/
       - name: Run tests
         run: cargo test --verbose
@@ -32,23 +32,26 @@ jobs:
         job:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            protoc_suffix: linux-x86_64
+            protoc: linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            protoc: linux-x86_64
           - os: macos-latest
             target: x86_64-apple-darwin
-            protoc_suffix: osx-x86_64
+            protoc: osx-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
-            protoc_suffix: osx-aarch_64
+            protoc: osx-x86_64
     steps:
       - uses: actions/checkout@v4
       - run: |
-          wget https://github.com/protocolbuffers/protobuf/releases/download/v26.0/protoc-26.0-${{ matrix.job.protoc_suffix }}.zip
-          unzip protoc-26.0-${{ matrix.job.protoc_suffix }}.zip
+          wget https://github.com/protocolbuffers/protobuf/releases/download/v26.0/protoc-26.0-${{ matrix.job.protoc }}.zip
+          unzip protoc-26.0-${{ matrix.job.protoc }}.zip
           sudo mv bin/protoc /usr/local/bin/
       - name: Build
         run: |
-          cargo build --release
-          mv target/release/stablessh stablessh-${{ matrix.job.target }}
+          cargo build --release --target ${{ matrix.job.target }}
+          mv target/${{ matrix.job.target }}/release/stablessh stablessh-${{ matrix.job.target }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

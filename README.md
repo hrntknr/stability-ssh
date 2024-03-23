@@ -66,6 +66,23 @@ ExecStart=/usr/local/bin/stablessh server
 WantedBy=multi-user.target
 ```
 
+### Ctl command
+
+```
+> $ stablessh ctl conn list
+ id       | name | last_active | pkt_buf
+----------+------+-------------+---------
+ d01c1bbe | mba  | in_use      | 0
+ aba69f2a | mba  | 6           | 0
+
+> $ stablessh ctl conn kill aba69f2a
+
+> $ stablessh ctl conn list
+ id       | name | last_active | pkt_buf
+----------+------+-------------+---------
+ d01c1bbe | mba  | in_use      | 0
+```
+
 ### Options
 
 ```
@@ -75,6 +92,7 @@ Usage: stablessh <COMMAND>
 Commands:
   server
   client
+  ctl
   help    Print this message or the help of the given subcommand(s)
 
 Options:

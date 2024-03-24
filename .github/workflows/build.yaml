@@ -20,46 +20,48 @@ jobs:
       matrix:
         job:
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            protoc: linux-x86_64
-            gcc: gcc-x86-64-linux-gnu
+            arch: x86_64
+            libc: gnu
             publish: true
           - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            protoc: linux-x86_64
-            gcc: gcc-aarch64-linux-gnu
+            arch: aarch64
+            libc: gnu
+          - os: ubuntu-latest
+            arch: x86_64
+            libc: musl
+          - os: ubuntu-latest
+            arch: aarch64
+            libc: musl
           - os: macos-latest
-            target: x86_64-apple-darwin
-            protoc: osx-x86_64
+            arch: x86_64
           - os: macos-latest
-            target: aarch64-apple-darwin
-            protoc: osx-x86_64
+            arch: aarch64
+    env:
+      TARGETARCH: ${{ matrix.job.arch }}
+      LIBC: ${{ matrix.job.libc }}
     steps:
       - uses: actions/checkout@v4
-      - run: |
-          cd $(mktemp -d)
-          wget https://github.com/protocolbuffers/protobuf/releases/download/v26.0/protoc-26.0-${{ matrix.job.protoc }}.zip
-          unzip protoc-26.0-${{ matrix.job.protoc }}.zip
-          sudo mv bin/protoc /usr/local/bin/
-      - run: rustup target add ${{ matrix.job.target }}
-      - run: sudo apt-get install -y ${{ matrix.job.gcc }}
-        if: ${{ matrix.job.os == 'ubuntu-latest' }}
+      - run: ./scripts/setup-depends.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: echo "TARGET=$(./scripts/resolve-arch.sh target)" >> $GITHUB_ENV
       - name: Build
         run: |
-          cargo build --release --target ${{ matrix.job.target }}
-          mv target/${{ matrix.job.target }}/release/stablessh /tmp/stablessh-${{ matrix.job.target }}
+          rustup target add $TARGET
+          cargo build --release --target $TARGET
+          mv target/$TARGET/release/stablessh /tmp/stablessh-$TARGET
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: stablessh-${{ matrix.job.target }}
-          path: /tmp/stablessh-${{ matrix.job.target }}
+          name: stablessh-${{ env.TARGET }}
+          path: /tmp/stablessh-${{ env.TARGET }}
       - name: Create release
         id: create_release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: /tmp/stablessh-${{ matrix.job.target }}
+          files: /tmp/stablessh-${{ env.TARGET }}
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
       - name: Publish crate
         run: cargo publish

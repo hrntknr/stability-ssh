@@ -15,7 +15,7 @@ clap = { version = "4.5.4", features = ["derive"] }
 env_logger = "0.11.3"
 hostname = "0.4.0"
 log = "0.4.21"
-quinn = "0.10.2"
+quinn = "0.11.1"
 rcgen = "0.12.1"
 rustls = { version = "0.21.10", features = ["dangerous_configuration"] }
 tokio = { version = "1.37.0", features = ["full"] }
